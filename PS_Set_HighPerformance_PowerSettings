@@ -1,4 +1,4 @@
-$computers = "NWFLODPPDSRST01"
+$computers = "TEST01"
 
 
 ##SELECTS 
