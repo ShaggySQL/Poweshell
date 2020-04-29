@@ -1,0 +1,236 @@
+--******************************************************************************************************************
+-- By:  Kelly Ennis
+-- June 07, 2017
+--
+-- Modified Buffer Cache Hit Ratio to return regardless of default or named instance.
+-- Modified to work for -- SQL Server 2005, 2008, 2012, 2014, 2016
+--
+--******************************************************************************************************************
+--
+SELECT sqlserver_start_time FROM sys.dm_os_sys_info
+GO
+-- SELECT create_date FROM sys.databases WHERE name = 'tempdb'
+-- GO
+-- *** HARDWARE INFORMATION FOR SQL SERVER (Cannot distinguish between HT (Hyper-Threading & multi-core) ***
+IF @@VERSION like 'Microsoft SQL Server 200%'
+BEGIN
+       EXECUTE('SELECT cpu_count AS [Logical CPU Count], hyperthread_ratio AS [Hyperthread Ratio],
+       cpu_count/hyperthread_ratio AS [Physical CPU Count], 
+       physical_memory_in_bytes/1048576 AS [Physical Memory (MB)]
+       FROM sys.dm_os_sys_info')
+END
+ELSE
+BEGIN
+       EXECUTE('SELECT cpu_count AS [Logical CPU Count], hyperthread_ratio AS [Hyperthread Ratio],
+       cpu_count/hyperthread_ratio AS [Physical CPU Count], 
+       physical_memory_kb/1048576 AS [Physical Memory (MB)]
+       FROM sys.dm_os_sys_info')
+END
+GO
+
+SELECT *
+FROM sys.dm_os_sys_info
+GO
+
+--
+--
+select count(*) as CPUsInUseBySQL from sys.dm_os_schedulers where status='VISIBLE ONLINE'
+--
+--
+select value_in_use as SQLMAXDOP from sys.configurations where name = 'max degree of parallelism'
+--
+-- *** GET CPU UTILIZATION HISTORY ***
+SELECT 'CPU UTILIZATION HISTORY DATA'
+declare @ts_now bigint 
+--select @ts_now = cpu_ticks / convert(float, cpu_ticks_in_ms) from sys.dm_os_sys_info
+select @ts_now = cpu_ticks / (cpu_ticks/ms_ticks) from sys.dm_os_sys_info; 
+select TOP 20 
+      dateadd(ms, -1 * (@ts_now - [timestamp]), GetDate()) as EventTime, 
+      SQLProcessUtilization, 
+      100 - SystemIdle - SQLProcessUtilization as OtherProcessUtilization,
+      SystemIdle
+from ( 
+      select 
+            record.value('(./Record/@id)[1]', 'int') as record_id, 
+            record.value('(./Record/SchedulerMonitorEvent/SystemHealth/SystemIdle)[1]', 'int') as SystemIdle, 
+            record.value('(./Record/SchedulerMonitorEvent/SystemHealth/ProcessUtilization)[1]', 'int') as SQLProcessUtilization, 
+            timestamp 
+      from ( 
+            select timestamp, convert(xml, record) as record 
+            from sys.dm_os_ring_buffers 
+            where ring_buffer_type = N'RING_BUFFER_SCHEDULER_MONITOR' 
+            and record like '%<SystemHealth>%') as x 
+      ) as y 
+order by record_id desc 
+GO
+--
+-- *** SIGNAL & RESOURCE WAITS PERCENTAGE ***
+-- Calculates the signal and resource waits as a percentage of overall wait time.
+-- As Signal waits are the time waiting for the CPU to service a thread, if the signal wait
+-- time is above 10-15%, then your CPU may be under pressure. These wait stats are cumulative
+-- since SQL started, so will not give a result that reflects CPU loading over the previous
+-- few minutes. You can use DBCC to clear the wait stats and get a better snapshot of the 
+-- current CPU loading state.
+-- Resource Waits occur when a worker requests access to a resource that is not available
+-- because it is being used by another thread, or not yet available.  These are the most
+-- common types of waits, and surface as locks, latches, network and I/O.
+-- Summary:
+-- The time waiting for a resource is shown as Resource Waits. 
+-- The time waiting in the runnable queue for CPU is called Signal Waits.  
+-- CPU pressure which may be alleviated by faster or more CPUs.  Alternately, CPU pressure can
+-- be reduced by eliminating unnecessary sorts (indexes can avoid sorts in order & group by’s)
+-- and joins, and compilations (and re-compilations).
+--
+-- The time waiting for a resource is shown as Resource Waits.
+-- The time waiting in the runnable queue for CPU is called Signal Waits.
+--
+-- Shows a history of what have the waits been:
+select * from sys.dm_os_wait_stats
+where wait_type not in ('BROKER_TASK_STOP','Total','SLEEP','BROKER_EVENTHANDLER', 
+'BROKER_RECEIVE_WAITFOR', 'BROKER_TRANSMITTER','CHECKPOINT_QUEUE','CHKPT',
+'CLR_AUTO_EVENT','CLR_MANUAL_EVENT','KSOURCE_WAKEUP','LAZYWRITER_SLEEP', 'LOGMGR_QUEUE',
+'ONDEMAND_TASK_QUEUE','REQUEST_FOR_DEADLOCK_SEARCH','RESOURCE_QUEUE',
+'SERVER_IDLE_CHECK', 'SLEEP_BPOOL_FLUSH','SLEEP_DBSTARTUP','SLEEP_DCOMSTARTUP',
+'SLEEP_MSDBSTARTUP','SLEEP_SYSTEMTASK','SLEEP_TASK', 'SLEEP_TEMPDBSTARTUP',
+'SNI_HTTP_ACCEPT','SQLTRACE_BUFFER_FLUSH','TRACEWRITE','WAIT_FOR_RESULTS',
+'WAITFOR_TASKSHUTDOWN','XE_DISPATCHER_WAIT','XE_TIMER_EVENT','WAITFOR','CLR_SEMAPHORE',
+'BROKER_TO_FLUSH', 'DISPATCHER_QUEUE_SEMAPHORE','FT_IFTS_SCHEDULER_IDLE_WAIT', 
+'FT_IFTSHC_MUTEX', 'XE_DISPATCHER_JOIN', 'SQLTRACE_INCREMENTAL_FLUSH_SLEEP')
+order by wait_time_ms desc
+GO
+--
+-- DBCC SQLPERF('sys.dm_os_wait_stats', CLEAR)
+-- Average time of waits since SQL started.
+SELECT 'SIGNAL & RESOURCE WAIT DATA'
+Select
+  signal_wait_time_ms=sum(signal_wait_time_ms),
+  '%Signal (CPU) Waits - waits above 10-15% is usually a sign of CPU pressure' = cast(100.0 * sum(signal_wait_time_ms) / sum (wait_time_ms) AS numeric(20,2)),
+  resource_wait_time_ms=sum(wait_time_ms - signal_wait_time_ms),
+  '%Resource waits'= cast(100.0 * sum(wait_time_ms - signal_wait_time_ms) / sum (wait_time_ms) as numeric(20,2))
+From sys.dm_os_wait_stats
+GO
+--
+--
+DECLARE @pg_size INT, @Instancename varchar(50)
+SELECT @pg_size = low from master..spt_values where number = 1 and type = 'E'
+SELECT @Instancename = LEFT([object_name], (CHARINDEX(':',[object_name]))) 
+FROM sys.dm_os_performance_counters 
+WHERE counter_name = 'Buffer cache hit ratio'
+PRINT '----------------------------------------------------------------------------------------------------'
+PRINT 'Memory usage details for SQL Server instance ' + @@SERVERNAME  + ' (' + CAST(SERVERPROPERTY('productversion') AS VARCHAR) + ' - ' +  SUBSTRING(@@VERSION, CHARINDEX('X',@@VERSION),4)  + ' - ' + CAST(SERVERPROPERTY('edition') AS VARCHAR) + ')'
+PRINT '----------------------------------------------------------------------------------------------------'
+SELECT 'MEMORY CONFIGURATION ON THE SERVER VISIBLE TO THE OS'
+IF @@VERSION like 'Microsoft SQL Server 200%' 
+BEGIN
+       EXECUTE('SELECT physical_memory_in_bytes/1048576.0 as [Physical Memory_MB],
+                  physical_memory_in_bytes/1073741824.0 as [Physical Memory_GB],
+                  virtual_memory_in_bytes/1048576.0 as [Virtual Memory_MB],
+                  virtual_memory_in_bytes/1073741824.0 as [Virtual Memory_GB]
+                FROM sys.dm_os_sys_info')
+END
+ELSE
+BEGIN
+       EXECUTE('SELECT physical_memory_kb/1048576.0 as [Physical Memory_MB],
+                  physical_memory_kb/1073741824.0 as [Physical Memory_GB],
+                  virtual_memory_kb/1048576.0 as [Virtual Memory_MB],
+                  virtual_memory_kb/1073741824.0 as [Virtual Memory_GB]
+                FROM sys.dm_os_sys_info')
+END
+GO
+--
+SELECT 'TOTAL MEMORY USED BY SQL SERVER INSTANCE'
+SELECT cntr_value/1024.0 as Mem_MB, (cntr_value/1048576.0) as Mem_GB FROM sys.dm_os_performance_counters WHERE counter_name = 'Total Server Memory (KB)'
+--
+-- *** MEMORY UTILIZATION BY DATABASE ***
+SELECT 'MEMORY UTILIZATION DATA BY DATABASE'
+SELECT DB_NAME(database_id) AS [Database Name], COUNT(*) * 8 / 1024 AS [MB Used]
+FROM sys.dm_os_buffer_descriptors
+GROUP BY database_id
+ORDER BY COUNT (*) * 8 / 1024 DESC
+GO
+--
+-- *** PAGE LIFE EXPECTANCY (PLE) VALUE FOR DEFAULT INSTANCE ***
+-- PLE is a good measurement of memory pressure. Higher PLE is better, below 300 is generally bad.
+-- Watch the trend, not the absolute value. 
+SELECT 'PAGE LIFE EXPECTANCY DATA'
+SELECT [object_name], [counter_name], cntr_value AS [Page Life Expectancy < 300 maybe bad]
+  FROM sys.dm_os_performance_counters
+ WHERE OBJECT_NAME LIKE '%Buffer Manager%' -- Modify this if you have named instances
+ AND counter_name = 'Page life expectancy'
+GO
+--
+-- *** BUFFER CACHE HIT RATIO ***
+-- Alter the 'MSSQLServer:Buffer Manager' if using a name instance e.g --'MSSQL$INST1:Buffer Manager'
+-- SELECT * FROM sys.dm_os_performance_counters WHERE counter_name = 'Buffer cache hit ratio'
+SELECT ROUND(CAST(A.cntr_value1 AS NUMERIC) / CAST(B.cntr_value2 AS NUMERIC),3) AS Buffer_Cache_Hit_Ratio
+FROM (SELECT cntr_value AS cntr_value1
+      FROM sys.dm_os_performance_counters
+      WHERE counter_name = 'Buffer cache hit ratio'
+     ) AS A,
+     (SELECT cntr_value AS cntr_value2
+      FROM sys.dm_os_performance_counters
+      WHERE counter_name = 'Buffer cache hit ratio base'
+     ) AS B;
+GO
+--
+-- *** WHAT'S CURRENTLY EXECUTING ***
+SELECT 'WHAT''S CURRENTLY EXECUTING & BLOCKING'
+SET TRANSACTION ISOLATION LEVEL READ UNCOMMITTED
+SET ANSI_NULLS ON
+SET QUOTED_IDENTIFIER ON
+SET ANSI_PADDING ON
+GO
+IF OBJECT_ID('Util.Util_RunningRequests', 'P') IS NOT NULL 
+    DROP PROCEDURE Util.Util_RunningRequests
+GO
+SELECT  Sessions.session_id AS SessionID,
+        Requests.request_id AS RequestID,
+        Requests.database_id AS DatabaseID,
+        databases.name AS DatabaseName,
+        Sessions.login_name AS LoginName,
+        Sessions.host_name AS HostName,
+        Sessions.program_name AS ProgramName,
+        Sessions.client_interface_name AS ClientInterfaceName,
+        Requests.blocking_session_id AS BlockedBySessionID,
+        ISNULL(BlockRequests.BlockingRequestCount, 0) AS BlockingRequestCount,
+        Requests.wait_type AS WaitType,
+        Requests.wait_time AS WaitTime,
+        Requests.cpu_time AS CPUTime,
+        Requests.total_elapsed_time AS ElapsedTime,
+        Requests.reads AS Reads,
+        Requests.writes AS Writes,
+        Requests.logical_reads AS LogicalReads,
+        dm_os_tasks.PendingIOCount,
+        Requests.row_count AS [RowCount],
+        Requests.granted_query_memory * 8 AS GrantedQueryMemoryKB,
+        CONVERT(BIGINT, ( Requests.cpu_time + 1 ))
+        * CONVERT(BIGINT, ( Requests.reads * 10 + Requests.writes * 10 + Requests.logical_reads + 1 )) AS Score,
+        Statements.text AS BatchText,
+        CASE WHEN Requests.sql_handle IS NULL THEN ' '
+             ELSE SUBSTRING(Statements.text,
+             ( Requests.statement_start_offset + 2 ) / 2,
+             ( CASE WHEN Requests.statement_end_offset = -1
+               THEN LEN(CONVERT(NVARCHAR(MAX), Statements.text)) * 2
+               ELSE Requests.statement_end_offset
+               END - Requests.statement_start_offset ) / 2)
+        END AS StatementText,
+        QueryPlans.query_plan AS QueryPlan
+FROM    sys.dm_exec_sessions AS Sessions WITH ( NOLOCK )
+        JOIN sys.dm_exec_requests AS Requests WITH ( NOLOCK ) ON Sessions.session_id = Requests.session_id
+        LEFT OUTER JOIN sys.databases WITH ( NOLOCK ) ON Requests.database_id = databases.database_id
+        LEFT OUTER JOIN ( SELECT blocking_session_id,
+                          COUNT(*) AS BlockingRequestCount
+                          FROM sys.dm_exec_requests WITH ( NOLOCK )
+                          GROUP BY blocking_session_id
+                        ) AS BlockRequests ON Requests.session_id = BlockRequests.blocking_session_id
+        LEFT OUTER JOIN ( SELECT request_id, session_id,
+                          SUM(pending_io_count) AS PendingIOCount
+                          FROM sys.dm_os_tasks WITH ( NOLOCK )
+                          GROUP BY request_id, session_id
+                        ) AS dm_os_tasks ON Requests.request_id = dm_os_tasks.request_id
+        AND Requests.session_id = dm_os_tasks.session_id
+        CROSS APPLY sys.dm_exec_sql_text(sql_handle) AS Statements
+        CROSS APPLY sys.dm_exec_query_plan(plan_handle) AS QueryPlans
+ORDER BY DatabaseName 
+GO
+            

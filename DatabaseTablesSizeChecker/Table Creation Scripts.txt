@@ -1,0 +1,102 @@
+USE [INFODB]
+GO
+
+/****** Object:  Table [info].[Servers]    Script Date: 9/10/2018 9:51:39 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [info].[Servers](
+	[ServerID] [int] IDENTITY(1,1) NOT NULL,
+	[ServerName] [nchar](60) NOT NULL,
+	[IsServer] [bit] NOT NULL,
+	[IsInstance] [bit] NOT NULL,
+PRIMARY KEY CLUSTERED 
+(
+	[ServerID] ASC
+)WITH (PAD_INDEX = OFF, STATISTICS_NORECOMPUTE = OFF, IGNORE_DUP_KEY = OFF, ALLOW_ROW_LOCKS = ON, ALLOW_PAGE_LOCKS = ON) ON [PRIMARY]
+) ON [PRIMARY]
+GO
+
+
+USE [INFODB]
+GO
+
+/****** Object:  Table [info].[Drives]    Script Date: 9/10/2018 9:51:48 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [info].[Drives](
+	[ServerID] [int] NOT NULL,
+	[Drive] [nchar](50) NOT NULL,
+	[CapacityinGB] [decimal](18, 2) NOT NULL,
+	[UsedSpaceinGB] [decimal](18, 2) NOT NULL,
+	[FreeSpaceinGB] [decimal](18, 2) NOT NULL,
+	[LogDate] [datetime] NOT NULL
+) ON [PRIMARY]
+GO
+
+ALTER TABLE [info].[Drives]  WITH CHECK ADD FOREIGN KEY([ServerID])
+REFERENCES [info].[Servers] ([ServerID])
+GO
+
+
+USE [INFODB]
+GO
+
+/****** Object:  Table [info].[Databases]    Script Date: 9/10/2018 9:51:56 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [info].[Databases](
+	[ServerID] [int] NOT NULL,
+	[DatabaseName] [nchar](90) NOT NULL,
+	[Drive] [nchar](10) NOT NULL,
+	[UsedSpaceinGB] [decimal](18, 2) NOT NULL,
+	[FreeSpaceinGB] [decimal](18, 2) NOT NULL,
+	[DataSpaceinGB] [decimal](18, 2) NOT NULL,
+	[IndexSpaceinGB] [decimal](18, 2) NOT NULL,
+	[LastFullBackup] [nchar](30) NULL,
+	[LastDiffBackup] [nchar](30) NULL,
+	[LogDate] [datetime] NOT NULL
+) ON [PRIMARY]
+GO
+
+ALTER TABLE [info].[Databases]  WITH CHECK ADD FOREIGN KEY([ServerID])
+REFERENCES [info].[Servers] ([ServerID])
+GO
+
+
+USE [INFODB]
+GO
+
+/****** Object:  Table [info].[Tables]    Script Date: 9/10/2018 9:52:08 AM ******/
+SET ANSI_NULLS ON
+GO
+
+SET QUOTED_IDENTIFIER ON
+GO
+
+CREATE TABLE [info].[Tables](
+	[ServerID] [int] NOT NULL,
+	[DatabaseName] [nchar](100) NOT NULL,
+	[TableName] [nchar](100) NOT NULL,
+	[RowCT] [bigint] NOT NULL,
+	[DataSizeinGB] [decimal](18, 2) NOT NULL,
+	[IndexSizeinGB] [decimal](18, 2) NOT NULL,
+	[LogDate] [datetime] NOT NULL
+) ON [PRIMARY]
+GO
+
+ALTER TABLE [info].[Tables]  WITH CHECK ADD FOREIGN KEY([ServerID])
+REFERENCES [info].[Servers] ([ServerID])
+GO
+
